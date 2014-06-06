@@ -26,7 +26,7 @@
    |                                                                           |
    +---------------------------------------------------------------------------+ */
 
-#include <CMapirMOOSApp.h>
+#include <COpenMORAMOOSApp.h>
 #include <mrpt/system.h>
 #include <mrpt/slam.h>
 #include <mrpt/opengl.h>
@@ -35,7 +35,7 @@
 #include <OpenNI.h>  // Requires OpenNI2 (right?)
 
 
-class CRGBD_App : public CMapirMOOSApp
+class CRGBD_App : public COpenMORAApp
 {
 public:
     CRGBD_App();
