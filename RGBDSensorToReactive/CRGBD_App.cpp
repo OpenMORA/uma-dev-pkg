@@ -27,7 +27,11 @@
    +---------------------------------------------------------------------------+ */
 
 
-/**  @moos_module RGBD sensor data adquisition and processing.*/
+/**  @moos_module This module implementes the adquisition of color and depth images from a RGBD sensor (PrimeSense/Kinect) and process it.
+  *  The processing step is focused in the detection of obstacles for reactive navigation. The module published a list of points
+  *  where obstacles have been detected at different heights. Since processing all the points in the image will be computationally expensive
+  *  the parameters allow defining at which heights the processing will be carried out.
+  */
 
 #include "CRGBD_App.h"
 #include <sstream>
@@ -36,8 +40,9 @@
 
 using namespace std;
 using namespace mrpt;
-using namespace mrpt::slam;
+using namespace mrpt::obs;
 using namespace mrpt::utils;
+using namespace mrpt::poses;
 
 
 CRGBD_App::CRGBD_App()
@@ -55,7 +60,7 @@ bool CRGBD_App::OnStartUp()
 	{
 		bool open_ok;
 		
-		DoRegistrations();
+		// Read configuration params from ini file
 		ReadConfiguration();
 
 		if (m_new_sensor)
@@ -65,14 +70,16 @@ bool CRGBD_App::OnStartUp()
 
 		if (!open_ok)
 		{
-			cout << endl << "The device can't be openned";
+			cout << endl << "[RGBD]: ERROR The device can't be openned";
 			system::sleep(500);
 			return MOOSFail( "Closing the module." );
 		}
 
+		// Show debug window with the detected points?
 		if (m_visualization)
 			InitializeScene();
 		
+		DoRegistrations();
 		return true;
     }
 	catch (std::exception &e)
@@ -81,6 +88,7 @@ bool CRGBD_App::OnStartUp()
 		return MOOSFail( "Closing due to an exception." );
 	}
 }
+
 
 bool CRGBD_App::OnCommandMsg( CMOOSMsg Msg )
 {
@@ -96,24 +104,27 @@ bool CRGBD_App::OnCommandMsg( CMOOSMsg Msg )
     return true;
 }
 
+
 bool CRGBD_App::Iterate()
 {
 	try
 	{
+		// Get obstacles from images
 		if (m_new_sensor)
 			GetClosestPointsPS();
 		else
 			GetClosestPointsKinect();
 
 
+		// Publish detected poitns as OpenMORA variable
 		string sKinect1 = ObjectToString(&kinect_points);
 		m_Comms.Notify("KINECT1", sKinect1 );
+
 
 		if (m_visualization)
 			ShowPoints();
 
-		cout << endl << "Iteration period (approximate): " << GetTimeSinceIterate() << " seconds"; 
-
+		cout << endl << "[RGBD]: Iteration period (approximate): " << GetTimeSinceIterate() << " seconds";
 		return true;
 
 	}
@@ -168,25 +179,78 @@ bool CRGBD_App::OnNewMail(MOOSMSG_LIST &NewMail)
 }
 
 
+//----------------------------------------------------------------
+// ReadConfiguration: Read parameters of the RGBD camera to use
+//----------------------------------------------------------------
 void CRGBD_App::ReadConfiguration()
 {
+	// PROCESS PARAMS
+	//-----------------
+	//! @moos_param  levels  The number of levels (heights) to process the image from the RGBD camera
 	levels.resize(m_ini.read_int("","levels",1,true));
+
+	//! @moos_param  heights  Vector of cumulative heights (cm) where the processing will be carried out.
 	m_ini.read_vector("","heights", levels, levels, true);
+
+	//! @moos_param  floor_limit  Points detected with height < floor_limit will be considered as floor and discarded as obstacles
 	floor_limit = m_ini.read_float("","floor_limit", 0.05, true);
+
+	//! @moos_param  Opengl_scene	Whether or not to display an opengl scene with the detected obstacles (used for debug)
+	m_visualization = m_ini.read_bool("","Opengl_scene", 0, false);
+			
+	//! @moos_param  discard_high_ir_points  If enable, all points with IR value > IR_threshold will be discarded in the depth measurements (to avoid spurious due to light sources)
+	discard_high_ir_points = m_ini.read_bool("","discard_high_ir_points", false, false);
+
+	//! @moos_param  IR_threshold  Infrared threshold to consider a point affected by an IR light source
+	ir_threshold = m_ini.read_int("","IR_threshold", 750, false);
+
+	//! @moos_param  detect_close_obstacles_with_ir  If enable, points with IR value > IR_threshold will increase the counter of high_ir_px (see Count_threshold param) 
+	detect_close_obstacles_with_ir = m_ini.read_bool("","detect_close_obstacles_with_ir", false, false);
+
+	//! @moos_param  Count_threshold  [if detect_close_obstacles_with_ir=true] Number of pixels with IR value > IR_threshold to send the Reactive Module a warning (something may be close)
+	count_threshold = m_ini.read_int("","Count_threshold", 50, false);
+
+	// CAMERA PARAMS
+	//--------------
+	//! @moos_param  New_sensor  Indicates the type of RGBD camera: TRUE=PrimeSens, FALSE=Kinect
+	m_new_sensor = m_ini.read_bool("","New_sensor", 0, false);
+
+	//! @moos_param  Res_width  Camera resolution(px) - Shared for color, depth and infrared images (320 or 640)
+	res_width = m_ini.read_float("","Res_width", 320.0, false);
+
+	//! @moos_param  Res_height  Camera resolution(px) - Shared for color, depth and infrared images (240 or 480)
+	res_height = m_ini.read_float("","Res_height", 240.0, false);
+
+	//! @moos_param  min_depth  The minimum depth (m) the camera is able to detect
 	min_depth = m_ini.read_float("","min_depth",0.3,true);
+	
+	//! @moos_param  max_depth  The max depth (m) the camera is able to detect
 	max_depth = m_ini.read_float("","max_depth",5,true);
+
+	// CAMERA POSE
+	//------------
+	//! @moos_param  pose_x  The X position (m) of the camera on the robot
 	kinect_pose.x(m_ini.read_float("","pose_x", 0, true));
+
+	//! @moos_param  pose_y  The Y position (m) of the camera on the robot
+	//! @moos_param  lens_displacement  Distance (m) between the infrared emiter and receiver in the camera
 	kinect_pose.y(m_ini.read_float("","pose_y", 0, true) + m_ini.read_float("","lens_displacement", 0.012, true));
+	
+	//! @moos_param pose_z  The Z position (m) of the camera on the robot
 	kinect_pose.z(m_ini.read_float("","pose_z", 0, true));
+	
+	//! @moos_param  pose_yaw  The yaw angle (degreees) of the camera on the robot
+	//! @moos_param  pose_pitch  The pitch angle (degreees) of the camera on the robot
+	//! @moos_param  pose_roll  The roll angle (degreees) of the camera on the robot
 	kinect_pose.setYawPitchRoll(DEG2RAD(m_ini.read_float("","pose_yaw", 0, true)),
 								DEG2RAD(m_ini.read_float("","pose_pitch", 0, true)),
 								DEG2RAD(m_ini.read_float("","pose_roll", 0, false)));
-	m_visualization = m_ini.read_bool("","Opengl_scene", 0, false);
-	m_new_sensor = m_ini.read_bool("","New_sensor", 0, false);
-	count_threshold = m_ini.read_int("","Count_threshold", 5, false);
-	ir_threshold = m_ini.read_int("","IR_threshold", 750, false);
 }
 
+
+//-------------------------------------------------------------
+// Open a PrimeSense device using OpenNI2, and configure it
+//--------------------------------------------------------------
 bool CRGBD_App::OpenPSdevice()
 {
 	//==============================================================================================
@@ -195,55 +259,68 @@ bool CRGBD_App::OpenPSdevice()
 
 	const char* deviceURI = openni::ANY_DEVICE;
 	rc = openni::OpenNI::initialize();
-
-	printf("After initialization:\n %s\n", openni::OpenNI::getExtendedError());
-	printf("No error detected\n");
+	if (rc != openni::STATUS_OK) { printf("[RGBD]: After initialization:\n %s\n", openni::OpenNI::getExtendedError()); }
 	rc = device.open(deviceURI);
-	printf("Opened OK\n");
+
 	if (rc != openni::STATUS_OK)
 	{
-		printf("PrimeSense sensor: Device open failed:\n%s\n", openni::OpenNI::getExtendedError());
+		printf("[RGBD]: PS device failed to open:\n%s\n", openni::OpenNI::getExtendedError());
 		openni::OpenNI::shutdown();
 		return 0;
 	}
 
-	//								Create RGB and Depth channels
+	//								Create Depth and IR channels
 	//========================================================================================
 
 	rc = depth.create(device, openni::SENSOR_DEPTH);
-	if (rc == openni::STATUS_OK)
-	{
-		rc = depth.start();
-		if (rc != openni::STATUS_OK)
-		{
-			printf("PrimeSense sensor: Couldn't start depth stream:\n%s\n", openni::OpenNI::getExtendedError());
-			depth.destroy();
-		}
-	}
-	else
-	{
-		printf("PrimeSense sensor: Couldn't find depth stream:\n%s\n", openni::OpenNI::getExtendedError());
-	}
-
+	if (rc != openni::STATUS_OK) { printf("[RGBD]: PS sensor couldn't find depth stream:\n%s\n", openni::OpenNI::getExtendedError()); }
 
 	rc = ir.create(device, openni::SENSOR_IR);
-	if (rc == openni::STATUS_OK)
-	{
-		rc = ir.start();
-		if (rc != openni::STATUS_OK)
-		{
-			printf("PrimeSense sensor: Couldn't start infrared stream:\n%s\n", openni::OpenNI::getExtendedError());
-			ir.destroy();
-		}
-	}
-	else
-	{
-		printf("SimpleViewer: Couldn't find infrared stream:\n%s\n", openni::OpenNI::getExtendedError());
-	}
+	if (rc != openni::STATUS_OK) { printf("[RGBD]: PS sensor couldn't find infrared stream:\n%s\n", openni::OpenNI::getExtendedError()); }
 
+
+	//						Configure some properties (resolution)
+	//========================================================================================
+	rc = device.setImageRegistrationMode(openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR);
+	
+	// DEPTH
+	options = depth.getVideoMode();
+	options.setResolution(res_width,res_height);
+	rc = depth.setVideoMode(options);
+	rc = depth.setMirroringEnabled(false);
+	options = depth.getVideoMode();
+	printf("[RGBD] Depth resolution set to: (%d, %d)px \n", options.getResolutionX(), options.getResolutionY());
+	//depth.setProperty(XN_STREAM_PROPERTY_CLOSE_RANGE, 1);
+	
+	// IR
+	options = ir.getVideoMode();
+	options.setResolution(res_width,res_height);
+	rc = ir.setVideoMode(options);
+	rc = ir.setMirroringEnabled(false);
+	options = depth.getVideoMode();
+	printf("[RGBD] Infrared resolution set to: (%d, %d)px \n", options.getResolutionX(), options.getResolutionY());
+
+
+	//								Start channels
+	//========================================================================================	
+	rc = depth.start();
+	if (rc != openni::STATUS_OK)
+	{
+		printf("[RGBD]: PS sensor couldn't start depth stream:\n%s\n", openni::OpenNI::getExtendedError());
+		depth.destroy();
+	}	
+	
+	rc = ir.start();
+	if (rc != openni::STATUS_OK)
+	{
+		printf("[RGBD]: PS sensor couldn't start infrared stream:\n%s\n", openni::OpenNI::getExtendedError());
+		ir.destroy();
+	}
+	
+	// CHECK BOTH CHANNELS
 	if (!depth.isValid() || !ir.isValid())
 	{
-		printf("Camera: No valid streams. Exiting\n");
+		printf("[RGBD]: ERROR - No valid streams. Exiting\n");
 		openni::OpenNI::shutdown();
 		return 0;
 	}
@@ -253,30 +330,25 @@ bool CRGBD_App::OpenPSdevice()
 		return 0;
 	}
 
-	//						Configure some properties (resolution)
+
+	//						Uncomment this to see the video modes available
 	//========================================================================================
-
-	rc = device.setImageRegistrationMode(openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR);
-
-	//options = ir.getVideoMode();		
-	//options.setResolution(640,480);
-	//rc = ir.setVideoMode(options);
-	rc = ir.setMirroringEnabled(false);
-
-	//options = depth.getVideoMode();
-	//options.setResolution(640,480);
-	//rc = depth.setVideoMode(options);	
-	rc = depth.setMirroringEnabled(false);
-	depth.setProperty(XN_STREAM_PROPERTY_CLOSE_RANGE, 1);
-
-	options = depth.getVideoMode();
-	const int width = options.getResolutionX();
-	const int height = options.getResolutionY();
-	printf("\nResolution (%d, %d) \n", options.getResolutionX(), options.getResolutionY());
+	//Infrared modes
+	//openni::VideoMode vm;
+	//for(unsigned int i = 0; i<infrared.getSensorInfo().getSupportedVideoModes().getSize(); i++)
+	//{
+	//	vm = infrared.getSensorInfo().getSupportedVideoModes()[i];
+	//	printf("\n Depth mode %d: %d x %d, fps - %d Hz, pixel format - ",i, vm.getResolutionX(), vm.getResolutionY(), vm.getFps());
+	//	cout << vm.getPixelFormat();
+	//}	
 
 	return 1;
 }
 
+
+//-----------------------------------------
+// Open a Kinect device
+//-----------------------------------------
 bool CRGBD_App::OpenKinect()
 {
 
@@ -298,6 +370,9 @@ bool CRGBD_App::OpenKinect()
 
 	return 1;
 }
+
+
+
 
 void CRGBD_App::GetClosestPointsKinect()
 {
@@ -352,7 +427,7 @@ void CRGBD_App::GetClosestPointsKinect()
 
 				
 				//Consider the point if it has valid depth information
-				if(utils::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
+				if(mrpt::math::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
 				{
 					// Transform points to the absolute reference of coordinates
 					point_height = -(row - oy) * z * inv_fy + kinect_pose[2];
@@ -421,7 +496,7 @@ void CRGBD_App::GetClosestPointsKinect()
 				float z = depthImage.at<float>(row,col); 
 
 				//Consider the point if it has valid depth information
-				if(utils::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
+				if(mrpt::math::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
 				{
 					// Transform points to the absolute reference of coordinates
 					point_height = -(col - ox) * z * inv_fx + kinect_pose[2];
@@ -472,12 +547,17 @@ void CRGBD_App::GetClosestPointsKinect()
 	}
 }
 
+
+//-------------------------------------------------------------------------------------
+// Obtains the locations of the closests points based on depth and infrared images
+//-------------------------------------------------------------------------------------
 void CRGBD_App::GetClosestPointsPS()
 {
 	openni::VideoFrameRef framed, frameir;
 	depth.readFrame(&framed);
 	ir.readFrame(&frameir);
 
+	// DEPTH
 	const int height = framed.getHeight();
 	const int width = framed.getWidth();
 
@@ -488,9 +568,7 @@ void CRGBD_App::GetClosestPointsPS()
 
 	const float inv_fx = 1.0/fx;
 	const float inv_fy = 1.0/fy;
-
-	//const float inv_fx = 1.f/525.f;
-	//const float inv_fy = 1.f/525.f;
+		
 	const float ox = 0.5*float(width-1);
 	const float oy = 0.5*float(height-1);
 
@@ -506,16 +584,14 @@ void CRGBD_App::GetClosestPointsPS()
 
 	math::CMatrixFloat depthmat;
 	depthmat.setSize(height,width);
-
-
+	
 	kinect_points.clear();
 	close_count = 0;
 
 
-	if ((framed.getWidth() != frameir.getWidth()) || (framed.getHeight() != frameir.getHeight()))
-	{
-		cout << endl << "Both frames don't have the same size.";
-	}
+	// Check frames consistency (Depth vs IR)
+	if( (framed.getWidth() != frameir.getWidth()) || (framed.getHeight() != frameir.getHeight()) )	
+		cout << "[RGBD]: ERROR - IR and Depth frams don't have the same size." << endl;	
 	else
 	{
 		//Read one frame
@@ -523,21 +599,28 @@ void CRGBD_App::GetClosestPointsPS()
 		const openni::Grayscale16Pixel* pInfraredRow = (const openni::Grayscale16Pixel*)frameir.getData();
 		int rowSize = framed.getStrideInBytes() / sizeof(openni::DepthPixel);
 		
+		// Process all px in the image
 		for (int yc = height-1; yc >= 0; --yc)
 		{
 			const openni::DepthPixel* pDepth = pDepthRow;
 			const openni::Grayscale16Pixel* pInfrared = pInfraredRow;
 			for (int xc = width-1; xc >= 0; --xc, ++pDepth, ++pInfrared)
 			{
-				depthmat(yc,xc) = 0.001*(*pDepth);
-				if ((*pInfrared > ir_threshold)&&(*pDepth == 0))
-					close_count++;
+				// check IR value
+				if( discard_high_ir_points && (*pInfrared > ir_threshold) )
+					depthmat(yc,xc) = 0.0;			//Discard point
+				else
+					depthmat(yc,xc) = 0.001*(*pDepth);
+
+				// Check if detecting close obstacles is enabled
+				if( detect_close_obstacles_with_ir && (*pInfrared > ir_threshold) && (*pDepth == 0) )
+					close_count++;				
 			}
 			pDepthRow += rowSize;
 			pInfraredRow += rowSize;
 		}
 
-		//Publish proximity warning
+		//Publish proximity warning to the Reactive Module
 		if (close_count <= count_threshold)
 			m_Comms.Notify("IRD_WARNING", "false" );
 		else
@@ -630,7 +713,7 @@ void CRGBD_App::GetClosestPointsPS()
 					float z = depthmat(row,col); 
 
 					//Consider the point if it has valid depth information
-					if(utils::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
+					if(mrpt::math::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
 					{
 						// Transform points to the absolute reference of coordinates
 						point_height = (col - ox) * z * inv_fx + kinect_pose[2];
@@ -683,6 +766,7 @@ void CRGBD_App::GetClosestPointsPS()
 }
 
 
+
 void CRGBD_App::InitializeScene()
 {	
 	m_window = gui::CDisplayWindow3D::Create();
@@ -711,15 +795,15 @@ void CRGBD_App::InitializeScene()
 	m_window->repaint();
 }
 
+
 void CRGBD_App::ShowPoints()
 {
 	m_scene = m_window->get3DSceneAndLock();
 
 	opengl::CPointCloudPtr obj2 = opengl::CPointCloud::Create();
-	obj2 = m_scene->getByClass <CPointCloud> (0);
-	obj2->loadFromPointsMap<CSimplePointsMap> (&kinect_points);
+	obj2 = m_scene->getByClass <mrpt::opengl::CPointCloud> (0);
+	obj2->loadFromPointsMap<mrpt::maps::CSimplePointsMap> (&kinect_points);
 
 	m_window->unlockAccess3DScene();
 	m_window->repaint();
 }
-

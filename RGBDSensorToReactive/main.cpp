@@ -34,7 +34,7 @@ int main(int argc ,char * argv[])
 	try
 	{
 		const char * sMissionFile = "Mission.moos";
-		const char * sMOOSName = "pRGBDSensorToReactive";
+		const char * sMOOSName = "RGBDSensorToReactive";
 
 
 		switch(argc)

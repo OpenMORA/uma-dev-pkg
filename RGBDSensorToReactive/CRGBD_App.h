@@ -28,7 +28,7 @@
 
 #include <COpenMORAMOOSApp.h>
 #include <mrpt/system.h>
-#include <mrpt/slam.h>
+#include <mrpt/maps/CSimplePointsMap.h>
 #include <mrpt/opengl.h>
 #include <mrpt/gui.h>
 #include <mrpt/otherlibs/do_opencv_includes.h> // <opencv2\highgui.hpp> // To avoid errors with all versions of OpenCV
@@ -46,7 +46,9 @@ protected:
 	float min_depth;
 	float max_depth;
 	float floor_limit;
-	mrpt::slam::CSimplePointsMap	kinect_points;
+	float res_width;
+	float res_height;
+	mrpt::maps::CSimplePointsMap	kinect_points;
 	mrpt::poses::CPose3D			kinect_pose;
 
     cv::VideoCapture *capture;
@@ -63,7 +65,7 @@ protected:
 
 	unsigned ir_threshold;
 	unsigned count_threshold;
-
+	bool discard_high_ir_points,detect_close_obstacles_with_ir;
 
 	/** called at startup */
     virtual bool OnStartUp();
