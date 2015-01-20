@@ -37,10 +37,6 @@
 
 class CRGBD_App : public COpenMORAApp
 {
-public:
-    CRGBD_App();
-    virtual ~CRGBD_App();
-
 protected:
 	std::vector <float> levels;
 	float min_depth;
@@ -48,6 +44,8 @@ protected:
 	float floor_limit;
 	float res_width;
 	float res_height;
+	float lens_disp;
+	unsigned int downsample;
 	mrpt::maps::CSimplePointsMap	kinect_points;
 	mrpt::poses::CPose3D			kinect_pose;
 

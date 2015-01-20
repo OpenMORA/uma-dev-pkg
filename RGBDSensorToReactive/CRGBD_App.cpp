@@ -27,10 +27,10 @@
    +---------------------------------------------------------------------------+ */
 
 
-/**  @moos_module This module implementes the adquisition of color and depth images from a RGBD sensor (PrimeSense/Kinect) and process it.
-  *  The processing step is focused in the detection of obstacles for reactive navigation. The module published a list of points
-  *  where obstacles have been detected at different heights. Since processing all the points in the image will be computationally expensive
-  *  the parameters allow defining at which heights the processing will be carried out.
+/**  @moos_module This module implements the adquisition of depth and infrared images from an RGB-D camera (PrimeSense/Asus/Kinect)
+  *  and processes these data to send them to the 3D reactive module. The module sorts the points in height bands (according to the height sections
+  *  used to model the robot shape) and finds the most restrictive set of obstacles for each height band. This module should always be
+  *  launched together with the "NavigatorReactivePTG3D" because some of its configuration parameters need to be read.
   */
 
 #include "CRGBD_App.h"
@@ -43,15 +43,6 @@ using namespace mrpt;
 using namespace mrpt::obs;
 using namespace mrpt::utils;
 using namespace mrpt::poses;
-
-
-CRGBD_App::CRGBD_App()
-{
-}
-
-CRGBD_App::~CRGBD_App()
-{
-}
 
 
 bool CRGBD_App::OnStartUp()
@@ -108,12 +99,12 @@ bool CRGBD_App::OnCommandMsg( CMOOSMsg Msg )
 bool CRGBD_App::Iterate()
 {
 	try
-	{
+	{	
 		// Get obstacles from images
 		if (m_new_sensor)
-			GetClosestPointsPS();
+			GetClosestPointsPS();		//For "newer" range cameras (Primesense or Asus) using OpenNI2
 		else
-			GetClosestPointsKinect();
+			GetClosestPointsKinect();	//For the old Kinect sensor (Microsoft) using OpenCV
 
 
 		// Publish detected poitns as OpenMORA variable
@@ -124,7 +115,7 @@ bool CRGBD_App::Iterate()
 		if (m_visualization)
 			ShowPoints();
 
-		cout << endl << "[RGBD]: Iteration period (approximate): " << GetTimeSinceIterate() << " seconds";
+		cout << endl << "[RGBD]: Iteration runtime (approximate): " << GetTimeSinceIterate() << " seconds";
 		return true;
 
 	}
@@ -186,11 +177,18 @@ void CRGBD_App::ReadConfiguration()
 {
 	// PROCESS PARAMS
 	//-----------------
-	//! @moos_param  levels  The number of levels (heights) to process the image from the RGBD camera
-	levels.resize(m_ini.read_int("","levels",1,true));
+	m_ini.enableSectionNames();
 
-	//! @moos_param  heights  Vector of cumulative heights (cm) where the processing will be carried out.
-	m_ini.read_vector("","heights", levels, levels, true);
+	//Read number of height levels from the "NavigatorReactivePTG3D" module
+	levels.resize(m_ini.read_int("NavigatorReactivePTG3D","HEIGHT_LEVELS",1,true));
+
+	//Read the 3D height sections that models the robot from the "NavigatorReactivePTG3D" module
+	for (unsigned int i=0;i<levels.size();i++)
+	{
+		levels[i] = m_ini.read_float("NavigatorReactivePTG3D",format("LEVEL%d_HEIGHT",i+1), 1, true);
+		if (i > 0)
+			levels[i] += levels[i-1];
+	}
 
 	//! @moos_param  floor_limit  Points detected with height < floor_limit will be considered as floor and discarded as obstacles
 	floor_limit = m_ini.read_float("","floor_limit", 0.05, true);
@@ -212,14 +210,21 @@ void CRGBD_App::ReadConfiguration()
 
 	// CAMERA PARAMS
 	//--------------
-	//! @moos_param  New_sensor  Indicates the type of RGBD camera: TRUE=PrimeSens, FALSE=Kinect
+	//! @moos_param  New_sensor  Indicates the type of RGBD camera: TRUE=PrimeSense or Asus, FALSE=Kinect
 	m_new_sensor = m_ini.read_bool("","New_sensor", 0, false);
+	if (m_new_sensor)
+		lens_disp = 0.05f;
+	else
+		lens_disp = -0.015f; //Different sign because of mirroring of the image
 
-	//! @moos_param  Res_width  Camera resolution(px) - Shared for color, depth and infrared images (320 or 640)
+	//! @moos_param  Res_width  Camera resolution(px) - Shared for depth and infrared images (320 or 640). Only used if New_sensor == true
 	res_width = m_ini.read_float("","Res_width", 320.0, false);
 
-	//! @moos_param  Res_height  Camera resolution(px) - Shared for color, depth and infrared images (240 or 480)
+	//! @moos_param  Res_height  Camera resolution(px) - Shared for depth and infrared images (240 or 480). Only used if New_sensor == true
 	res_height = m_ini.read_float("","Res_height", 240.0, false);
+
+	//! @moos_param  Downsample  Use it to consider coarser images (computationally lighter). It must be integer
+	downsample = m_ini.read_int("","Downsample", 1, false);
 
 	//! @moos_param  min_depth  The minimum depth (m) the camera is able to detect
 	min_depth = m_ini.read_float("","min_depth",0.3,true);
@@ -233,30 +238,28 @@ void CRGBD_App::ReadConfiguration()
 	kinect_pose.x(m_ini.read_float("","pose_x", 0, true));
 
 	//! @moos_param  pose_y  The Y position (m) of the camera on the robot
-	//! @moos_param  lens_displacement  Distance (m) between the infrared emiter and receiver in the camera
-	kinect_pose.y(m_ini.read_float("","pose_y", 0, true) + m_ini.read_float("","lens_displacement", 0.012, true));
+	kinect_pose.y(m_ini.read_float("","pose_y", 0, true));
 	
 	//! @moos_param pose_z  The Z position (m) of the camera on the robot
 	kinect_pose.z(m_ini.read_float("","pose_z", 0, true));
 	
-	//! @moos_param  pose_yaw  The yaw angle (degreees) of the camera on the robot
-	//! @moos_param  pose_pitch  The pitch angle (degreees) of the camera on the robot
-	//! @moos_param  pose_roll  The roll angle (degreees) of the camera on the robot
+	//! @moos_param  pose_yaw  The yaw angle (degrees) of the camera on the robot (-180,180)
+	//! @moos_param  pose_pitch  The pitch angle (degrees) of the camera on the robot (-80,80) (something logical...)
+	//! @moos_param  pose_roll  The roll angle (degrees) of the camera on the robot (-90,90)
 	kinect_pose.setYawPitchRoll(DEG2RAD(m_ini.read_float("","pose_yaw", 0, true)),
 								DEG2RAD(m_ini.read_float("","pose_pitch", 0, true)),
 								DEG2RAD(m_ini.read_float("","pose_roll", 0, false)));
 }
 
 
-//-------------------------------------------------------------
-// Open a PrimeSense device using OpenNI2, and configure it
+//--------------------------------------------------------------
+// Open a PrimeSense/Asus device using OpenNI2, and configure it
 //--------------------------------------------------------------
 bool CRGBD_App::OpenPSdevice()
 {
 	//==============================================================================================
-	//									Open Carmine 1.08 or 1.09
+	//									Initialize range Camera
 	//==============================================================================================
-
 	const char* deviceURI = openni::ANY_DEVICE;
 	rc = openni::OpenNI::initialize();
 	if (rc != openni::STATUS_OK) { printf("[RGBD]: After initialization:\n %s\n", openni::OpenNI::getExtendedError()); }
@@ -271,7 +274,6 @@ bool CRGBD_App::OpenPSdevice()
 
 	//								Create Depth and IR channels
 	//========================================================================================
-
 	rc = depth.create(device, openni::SENSOR_DEPTH);
 	if (rc != openni::STATUS_OK) { printf("[RGBD]: PS sensor couldn't find depth stream:\n%s\n", openni::OpenNI::getExtendedError()); }
 
@@ -279,9 +281,8 @@ bool CRGBD_App::OpenPSdevice()
 	if (rc != openni::STATUS_OK) { printf("[RGBD]: PS sensor couldn't find infrared stream:\n%s\n", openni::OpenNI::getExtendedError()); }
 
 
-	//						Configure some properties (resolution)
+	//								Configure video properties
 	//========================================================================================
-	rc = device.setImageRegistrationMode(openni::IMAGE_REGISTRATION_DEPTH_TO_COLOR);
 	
 	// DEPTH
 	options = depth.getVideoMode();
@@ -289,7 +290,9 @@ bool CRGBD_App::OpenPSdevice()
 	rc = depth.setVideoMode(options);
 	rc = depth.setMirroringEnabled(false);
 	options = depth.getVideoMode();
-	printf("[RGBD] Depth resolution set to: (%d, %d)px \n", options.getResolutionX(), options.getResolutionY());
+	printf("[RGBD] Depth resolution set to: (%d, %d) \n", options.getResolutionX(), options.getResolutionY());
+	const int depth_resx = options.getResolutionX();
+	const int depth_resy = options.getResolutionY();
 	//depth.setProperty(XN_STREAM_PROPERTY_CLOSE_RANGE, 1);
 	
 	// IR
@@ -298,10 +301,17 @@ bool CRGBD_App::OpenPSdevice()
 	rc = ir.setVideoMode(options);
 	rc = ir.setMirroringEnabled(false);
 	options = depth.getVideoMode();
-	printf("[RGBD] Infrared resolution set to: (%d, %d)px \n", options.getResolutionX(), options.getResolutionY());
+	printf("[RGBD] Infrared resolution set to: (%d, %d) \n", options.getResolutionX(), options.getResolutionY());
 
+	// Check channels consistency (Depth vs IR)
+	if( (depth_resx != options.getResolutionX()) || (depth_resy != options.getResolutionY()) )
+	{
+		cout << "[RGBD]: ERROR - IR and Depth frames don't have the same size." << endl;
+		openni::OpenNI::shutdown();
+		return 0;
+	}
 
-	//								Start channels
+	//									Start channels
 	//========================================================================================	
 	rc = depth.start();
 	if (rc != openni::STATUS_OK)
@@ -330,7 +340,6 @@ bool CRGBD_App::OpenPSdevice()
 		return 0;
 	}
 
-
 	//						Uncomment this to see the video modes available
 	//========================================================================================
 	//Infrared modes
@@ -347,16 +356,14 @@ bool CRGBD_App::OpenPSdevice()
 
 
 //-----------------------------------------
-// Open a Kinect device
+//				Open Kinect
 //-----------------------------------------
 bool CRGBD_App::OpenKinect()
 {
-
-	//==============================================================================================
-	//											Open kinect
-	//==============================================================================================
-
-	cout << "Kinect opening ...";
+	printf("\nKinect resolution: (640, 480).");
+	if (downsample == 1)
+		printf("\nRecommendation: Downsample the depth images to increase speed \n");
+	printf("\nKinect opening ...");
 	capture = new cv::VideoCapture(CV_CAP_OPENNI);
 	cout << "done." << endl;
 	if( !capture->isOpened() )
@@ -372,95 +379,86 @@ bool CRGBD_App::OpenKinect()
 }
 
 
-
-
 void CRGBD_App::GetClosestPointsKinect()
 {
+	//					Read new frame
+	//=======================================================
 	if( !capture->grab() )
     {
-		std::cout << "Can not grab images." << std::endl;
+		std::cout << "Cannot grab images." << std::endl;
         return;
     }
 
-	//Capture the current frame
 	cv::Mat depthImage;
     capture->retrieve( depthImage, CV_CAP_OPENNI_DEPTH_MAP );
     depthImage.convertTo( depthImage, CV_32FC1, 1./1000 );
 
-	
-	const float inv_fx = 1.f/525.f;
-	const float inv_fy = 1.f/525.f;
-	const float ox = 319.5;
-	const float oy = 239.5;
-	float		point_height;
+	//					Process data
+	//=======================================================
+	const float inv_f = 1.f/525.f;
+	const float ox = 319.5f;
+	const float oy = 239.5f;
 
 	unsigned int height = depthImage.rows;
 	unsigned int width = depthImage.cols;
 
-	CPose3D pose_point;
-	CPose3D point_transformed;
-
 	std::vector <float> x_sel;
 	std::vector <float> y_sel;
 	std::vector <float> z_sel;
-	std::vector <float> d_sel;
 	kinect_points.clear();
 
+	math::CMatrixDouble44 pose_trans;
+	kinect_pose.getHomogeneousMatrix(pose_trans);
 
-	//---------------------------------------------------------------------------
-	//						Kinect in horizontal position
-	//---------------------------------------------------------------------------
-	if (kinect_pose.roll() == 0)
+	if (abs(kinect_pose[5]) < 0.4f*M_PI)
 	{
 		// Obtain the nearest point of each colum at each height level
-		for ( unsigned int col = 0; col < width; col++ )// col = x
+		//------------------------------------------------------------
+		for ( int col = 0; col < width; col += downsample )
 		{
 			x_sel.assign(levels.size(),20);
 			y_sel.assign(levels.size(),20);
 			z_sel.assign(levels.size(),20);
-			d_sel.assign(levels.size(),20);
 
-			for ( unsigned int row = 0; row < height; row++ ) //row = y
+			for ( int row = 0; row < height; row += downsample )
 			{			
 				//Obtain the depth of a pixel
-				float z = depthImage.at<float>(row,col); 
-
+				const float xloc = depthImage.at<float>(row,col); 
 				
 				//Consider the point if it has valid depth information
-				if(mrpt::math::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
-				{
-					// Transform points to the absolute reference of coordinates
-					point_height = -(row - oy) * z * inv_fy + kinect_pose[2];
+				if(mrpt::math::isFinite(xloc)&&(xloc >= min_depth && xloc <= max_depth)) 
+				{		
+					//Fast transformation
+					const float yloc = (ox - col)*xloc*inv_f + lens_disp;
+					const float zloc = (oy - row)*xloc*inv_f;
+
+					const float xtrans = xloc*pose_trans(0,0) + yloc*pose_trans(0,1) + zloc*pose_trans(0,2) + pose_trans(0,3);
+					const float ytrans = xloc*pose_trans(1,0) + yloc*pose_trans(1,1) + zloc*pose_trans(1,2) + pose_trans(1,3);
+					const float ztrans = xloc*pose_trans(2,0) + yloc*pose_trans(2,1) + zloc*pose_trans(2,2) + pose_trans(2,3);
 			
 					for (unsigned int i=0; i<levels.size(); i++)
 					{
 						if (i == 0)
 						{
-							if ((point_height < levels[i])&&(point_height>=floor_limit))
+							if ((ztrans < levels[i])&&(ztrans >= floor_limit))
 							{
-								if (z < d_sel[0])
+								if (xloc < x_sel[0])
 								{
-									pose_point.setFromValues(z, -(col - ox) * z * inv_fx, -(row - oy) * z * inv_fy, 0, 0, 0);
-									point_transformed = kinect_pose + pose_point;
-									x_sel[i] = point_transformed[0];
-									y_sel[i] = point_transformed[1];
-									z_sel[i] = point_transformed[2];									
-									d_sel[i] = z;
+									x_sel[i] = xtrans;
+									y_sel[i] = ytrans;
+									z_sel[i] = ztrans;
 								}
 							}
 						}
 						else
 						{
-							if ((point_height < levels[i])&&(point_height>=levels[i-1]))
+							if ((ztrans < levels[i])&&(ztrans >= levels[i-1]))
 							{
-								if (z < d_sel[i])
+								if (xloc < x_sel[i])
 								{
-									pose_point.setFromValues(z, -(col - ox) * z * inv_fx, -(row - oy) * z * inv_fy, 0, 0, 0);
-									point_transformed = kinect_pose + pose_point;
-									x_sel[i] = point_transformed[0];
-									y_sel[i] = point_transformed[1];
-									z_sel[i] = point_transformed[2];									
-									d_sel[i] = z;
+									x_sel[i] = xtrans;
+									y_sel[i] = ytrans;
+									z_sel[i] = ztrans;
 								}
 							}
 						}
@@ -470,66 +468,60 @@ void CRGBD_App::GetClosestPointsKinect()
 
 			//Insert the most restrictive points in "kinect_points"
 			for (unsigned int i = 0; i < levels.size(); i++)
-			{
 				if (x_sel[i] != 20)
 					kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
-			}
+
 		}
 	}
-
-	//---------------------------------------------------------------------------
-	//						Kinect in vertical position
-	//---------------------------------------------------------------------------
 	else
 	{
-		// Obtain the nearest point of each colum at each height level
-		for ( unsigned int row = 0; row < height; row++ )// col = x
+		// Obtain the nearest point of each row at each height level
+		//-------------------------------------------------------------
+		for ( int row = 0; row < height; row += downsample )
 		{
 			x_sel.assign(levels.size(),20);
 			y_sel.assign(levels.size(),20);
 			z_sel.assign(levels.size(),20);
-			d_sel.assign(levels.size(),20);
 
-			for ( unsigned int col = 0; col < width; col++ ) //row = y
+			for ( int col = 0; col < width; col += downsample )
 			{			
 				//Obtain the depth of a pixel
-				float z = depthImage.at<float>(row,col); 
-
+				const float xloc = depthImage.at<float>(row,col); 
+				
 				//Consider the point if it has valid depth information
-				if(mrpt::math::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
-				{
-					// Transform points to the absolute reference of coordinates
-					point_height = -(col - ox) * z * inv_fx + kinect_pose[2];
+				if(mrpt::math::isFinite(xloc)&&(xloc >= min_depth && xloc <= max_depth)) 
+				{			
+					//Fast transformation
+					const float yloc = (ox - col)*xloc*inv_f + lens_disp;
+					const float zloc = (oy - row)*xloc*inv_f;
+
+					const float xtrans = xloc*pose_trans(0,0) + yloc*pose_trans(0,1) + zloc*pose_trans(0,2) + pose_trans(0,3);
+					const float ytrans = xloc*pose_trans(1,0) + yloc*pose_trans(1,1) + zloc*pose_trans(1,2) + pose_trans(1,3);
+					const float ztrans = xloc*pose_trans(2,0) + yloc*pose_trans(2,1) + zloc*pose_trans(2,2) + pose_trans(2,3);
 			
 					for (unsigned int i=0; i<levels.size(); i++)
 					{
 						if (i == 0)
 						{
-							if ((point_height < levels[i])&&(point_height>=floor_limit))
+							if ((ztrans < levels[i])&&(ztrans >= floor_limit))
 							{
-								if (z < d_sel[0])
+								if (xloc < x_sel[0])
 								{
-									pose_point.setFromValues(z, -(col - ox) * z * inv_fx, -(row - oy) * z * inv_fy, 0, 0, 0);
-									point_transformed = kinect_pose + pose_point;
-									x_sel[i] = point_transformed[0];
-									y_sel[i] = point_transformed[1];
-									z_sel[i] = point_transformed[2];
-									d_sel[i] = z;
+									x_sel[i] = xtrans;
+									y_sel[i] = ytrans;
+									z_sel[i] = ztrans;
 								}
 							}
 						}
 						else
 						{
-							if ((point_height < levels[i])&&(point_height>=levels[i-1]))
+							if ((ztrans < levels[i])&&(ztrans >= levels[i-1]))
 							{
-								if (z < d_sel[i])
+								if (xloc < x_sel[i])
 								{
-									pose_point.setFromValues(z, -(col - ox) * z * inv_fx, -(row - oy) * z * inv_fy, 0, 0, 0);
-									point_transformed = kinect_pose + pose_point;
-									x_sel[i] = point_transformed[0];
-									y_sel[i] = point_transformed[1];
-									z_sel[i] = point_transformed[2];
-									d_sel[i] = z;
+									x_sel[i] = xtrans;
+									y_sel[i] = ytrans;
+									z_sel[i] = ztrans;
 								}
 							}
 						}
@@ -539,10 +531,9 @@ void CRGBD_App::GetClosestPointsKinect()
 
 			//Insert the most restrictive points in "kinect_points"
 			for (unsigned int i = 0; i < levels.size(); i++)
-			{
 				if (x_sel[i] != 20)
 					kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
-			}
+
 		}
 	}
 }
@@ -561,206 +552,188 @@ void CRGBD_App::GetClosestPointsPS()
 	const int height = framed.getHeight();
 	const int width = framed.getWidth();
 
-	float hFov = depth.getHorizontalFieldOfView();
-	float fx = width / (2.0f * tan (hFov / 2.0f));
-	float vFov = depth.getVerticalFieldOfView();
-	float fy = height / (2.0f * tan (vFov / 2.0f)); 
+	const float hFov = depth.getHorizontalFieldOfView();
+	const float vFov = depth.getVerticalFieldOfView();
+	const float inv_f = (2.0f * tan (hFov / 2.0f))/width;
+	const float ox = 0.5f*float(width-1);
+	const float oy = 0.5f*float(height-1);
 
-	const float inv_fx = 1.0/fx;
-	const float inv_fy = 1.0/fy;
-		
-	const float ox = 0.5*float(width-1);
-	const float oy = 0.5*float(height-1);
-
-	float	point_height;
-	float	close_count;
-	CPose3D pose_point;
-	CPose3D point_transformed;
-
-	std::vector <float> x_sel;
-	std::vector <float> y_sel;
-	std::vector <float> z_sel;
-	std::vector <float> d_sel;
+	unsigned int close_count = 0;
 
 	math::CMatrixFloat depthmat;
 	depthmat.setSize(height,width);
 	
+
+	//						Read new frames and check infrared saturation
+	//=================================================================================================
+	const openni::DepthPixel* pDepthRow = (const openni::DepthPixel*)framed.getData();
+	const openni::Grayscale16Pixel* pInfraredRow = (const openni::Grayscale16Pixel*)frameir.getData();
+	int rowSize = framed.getStrideInBytes() / sizeof(openni::DepthPixel);
+		
+	// Process all px in the image
+	for (int yc = height-1; yc >= 0; --yc)
+	{
+		const openni::DepthPixel* pDepth = pDepthRow;
+		const openni::Grayscale16Pixel* pInfrared = pInfraredRow;
+		for (int xc = width-1; xc >= 0; --xc, ++pDepth, ++pInfrared)
+		{
+			// check IR value
+			if( discard_high_ir_points && (*pInfrared > ir_threshold) )
+				depthmat(yc,xc) = 0.f;			//Discard point
+			else
+				depthmat(yc,xc) = 0.001f*(*pDepth);
+
+			// Check if detecting close obstacles is enabled
+			if( detect_close_obstacles_with_ir && (*pInfrared > ir_threshold) && (*pDepth == 0.f) )
+				close_count++;				
+		}
+		pDepthRow += rowSize;
+		pInfraredRow += rowSize;
+	}
+
+	//Publish proximity warning to the Reactive Module
+	if (close_count <= count_threshold)
+		m_Comms.Notify("IRD_WARNING", "false" );
+	else
+		m_Comms.Notify("IRD_WARNING", "true" );
+
+
+	//---------------------------------------------------------------------------
+	//						Process the point set
+	//---------------------------------------------------------------------------
 	kinect_points.clear();
-	close_count = 0;
+	
+	std::vector <float> x_sel;
+	std::vector <float> y_sel;
+	std::vector <float> z_sel;
 
+	math::CMatrixDouble44 pose_trans;
+	kinect_pose.getHomogeneousMatrix(pose_trans);
 
-	// Check frames consistency (Depth vs IR)
-	if( (framed.getWidth() != frameir.getWidth()) || (framed.getHeight() != frameir.getHeight()) )	
-		cout << "[RGBD]: ERROR - IR and Depth frams don't have the same size." << endl;	
+	if ( abs(kinect_pose[5]) < 0.4f*M_PI)
+	{
+		// Obtain the nearest point of each colum at each height level
+		//------------------------------------------------------------
+		for ( unsigned int col = 0; col < width; col += downsample )
+		{
+			x_sel.assign(levels.size(),20);
+			y_sel.assign(levels.size(),20);
+			z_sel.assign(levels.size(),20);
+
+			for ( unsigned int row = 0; row < height; row += downsample )
+			{			
+				//Obtain the depth of a pixel
+				const float xloc = depthmat(row,col); 
+
+				//Consider the point if it has valid depth information
+				if(xloc >= min_depth && xloc <= max_depth)
+				{
+					//Fast transformation
+					const float yloc = (col - ox)*xloc*inv_f + lens_disp;
+					const float zloc = (row - oy)*xloc*inv_f;
+
+					const float xtrans = xloc*pose_trans(0,0) + yloc*pose_trans(0,1) + zloc*pose_trans(0,2) + pose_trans(0,3);
+					const float ytrans = xloc*pose_trans(1,0) + yloc*pose_trans(1,1) + zloc*pose_trans(1,2) + pose_trans(1,3);
+					const float ztrans = xloc*pose_trans(2,0) + yloc*pose_trans(2,1) + zloc*pose_trans(2,2) + pose_trans(2,3);
+			
+					for (unsigned int i=0; i<levels.size(); i++)
+					{
+						if (i == 0)
+						{
+							if ((ztrans < levels[i])&&(ztrans >= floor_limit))
+							{
+								if (xloc < x_sel[0])
+								{
+									x_sel[i] = xtrans;
+									y_sel[i] = ytrans;
+									z_sel[i] = ztrans;
+								}
+							}
+						}
+						else
+						{
+							if ((ztrans < levels[i])&&(ztrans >= levels[i-1]))
+							{
+								if (xloc < x_sel[i])
+								{
+									x_sel[i] = xtrans;
+									y_sel[i] = ytrans;
+									z_sel[i] = ztrans;
+								}
+							}
+						}
+					}
+				}
+			}
+
+			//Insert the most restrictive points in "kinect_points"
+			for (unsigned int i = 0; i < levels.size(); i++)
+				if (x_sel[i] != 20)
+					kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
+
+		}
+	}
 	else
 	{
-		//Read one frame
-		const openni::DepthPixel* pDepthRow = (const openni::DepthPixel*)framed.getData();
-		const openni::Grayscale16Pixel* pInfraredRow = (const openni::Grayscale16Pixel*)frameir.getData();
-		int rowSize = framed.getStrideInBytes() / sizeof(openni::DepthPixel);
-		
-		// Process all px in the image
-		for (int yc = height-1; yc >= 0; --yc)
+		// Obtain the nearest point of each row at each height level
+		//-------------------------------------------------------------
+		for ( int row = 0; row < height; row += downsample )
 		{
-			const openni::DepthPixel* pDepth = pDepthRow;
-			const openni::Grayscale16Pixel* pInfrared = pInfraredRow;
-			for (int xc = width-1; xc >= 0; --xc, ++pDepth, ++pInfrared)
-			{
-				// check IR value
-				if( discard_high_ir_points && (*pInfrared > ir_threshold) )
-					depthmat(yc,xc) = 0.0;			//Discard point
-				else
-					depthmat(yc,xc) = 0.001*(*pDepth);
+			x_sel.assign(levels.size(),20);
+			y_sel.assign(levels.size(),20);
+			z_sel.assign(levels.size(),20);
 
-				// Check if detecting close obstacles is enabled
-				if( detect_close_obstacles_with_ir && (*pInfrared > ir_threshold) && (*pDepth == 0) )
-					close_count++;				
-			}
-			pDepthRow += rowSize;
-			pInfraredRow += rowSize;
-		}
+			for ( unsigned int col = 0; col < width; col += downsample )
+			{			
+				//Obtain the depth of a pixel
+				const float xloc = depthmat(row,col); 
 
-		//Publish proximity warning to the Reactive Module
-		if (close_count <= count_threshold)
-			m_Comms.Notify("IRD_WARNING", "false" );
-		else
-			m_Comms.Notify("IRD_WARNING", "true" );
+				//Consider the point if it has valid depth information
+				if(xloc >= min_depth && xloc <= max_depth)
+				{
+					//Fast transformation
+					const float yloc = (col - ox)*xloc*inv_f + lens_disp;
+					const float zloc = (row - oy)*xloc*inv_f;
 
-		//---------------------------------------------------------------------------
-		//						Kinect in horizontal position
-		//---------------------------------------------------------------------------
-		if ( kinect_pose.roll() == 0)
-		{
-			for ( unsigned int col = 0; col < width; col++ )// col = x
-			{
-				x_sel.assign(levels.size(),20);
-				y_sel.assign(levels.size(),20);
-				z_sel.assign(levels.size(),20);
-				d_sel.assign(levels.size(),20);
-
-				for ( unsigned int row = 0; row < height; row++ ) //row = y
-				{			
-					//Obtain the depth of a pixel
-					float z = depthmat(row,col); 
-
-					//Consider the point if it has valid depth information
-					if(z >= min_depth && z <= max_depth)
-					{
-						// Transform points to the absolute reference of coordinates
-						point_height = (row - oy) * z * inv_fy + kinect_pose[2];
+					const float xtrans = xloc*pose_trans(0,0) + yloc*pose_trans(0,1) + zloc*pose_trans(0,2) + pose_trans(0,3);
+					const float ytrans = xloc*pose_trans(1,0) + yloc*pose_trans(1,1) + zloc*pose_trans(1,2) + pose_trans(1,3);
+					const float ztrans = xloc*pose_trans(2,0) + yloc*pose_trans(2,1) + zloc*pose_trans(2,2) + pose_trans(2,3);
 			
-						for (unsigned int i=0; i<levels.size(); i++)
+					for (unsigned int i=0; i<levels.size(); i++)
+					{
+						if (i == 0)
 						{
-							if (i == 0)
+							if ((ztrans < levels[i])&&(ztrans >= floor_limit))
 							{
-								if ((point_height < levels[i])&&(point_height>=floor_limit))
+								if (xloc < x_sel[0])
 								{
-									if (z < d_sel[0])
-									{
-										pose_point.setFromValues(z, (col - ox) * z * inv_fx, (row - oy) * z * inv_fy, 0, 0, 0);
-										point_transformed = kinect_pose + pose_point;
-										x_sel[i] = point_transformed[0];
-										y_sel[i] = point_transformed[1];
-										z_sel[i] = point_transformed[2];
-										d_sel[i] = z;
-									}
+									x_sel[i] = xtrans;
+									y_sel[i] = ytrans;
+									z_sel[i] = ztrans;
 								}
 							}
-							else
+						}
+						else
+						{
+							if ((ztrans < levels[i])&&(ztrans >= levels[i-1]))
 							{
-								if ((point_height < levels[i])&&(point_height>=levels[i-1]))
+								if (xloc < x_sel[i])
 								{
-									if (z < d_sel[i])
-									{
-										pose_point.setFromValues(z, (col - ox) * z * inv_fx, (row - oy) * z * inv_fy, 0, 0, 0);
-										point_transformed = kinect_pose + pose_point;
-										x_sel[i] = point_transformed[0];
-										y_sel[i] = point_transformed[1];
-										z_sel[i] = point_transformed[2];
-										d_sel[i] = z;
-									}
+									x_sel[i] = xtrans;
+									y_sel[i] = ytrans;
+									z_sel[i] = ztrans;
 								}
 							}
 						}
 					}
 				}
-
-				//Insert the most restrictive points in "kinect_points"
-				for (unsigned int i = 0; i < levels.size(); i++)
-				{
-					if (x_sel[i] != 20)
-						kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
-				}
 			}
-		}
 
-		//---------------------------------------------------------------------------
-		//						Kinect in vertical position
-		//---------------------------------------------------------------------------
-		else
-		{
-			// Obtain the nearest point of each colum at each height level
-			for ( unsigned int row = 0; row < height; row++ )// col = x
-			{
-				x_sel.assign(levels.size(),20);
-				y_sel.assign(levels.size(),20);
-				z_sel.assign(levels.size(),20);
-				d_sel.assign(levels.size(),20);
+			//Insert the most restrictive points in "kinect_points"
+			for (unsigned int i = 0; i < levels.size(); i++)
+				if (x_sel[i] != 20)
+					kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
 
-				for ( unsigned int col = 0; col < width; col++ ) //row = y
-				{			
-					//Obtain the depth of a pixel
-					float z = depthmat(row,col); 
-
-					//Consider the point if it has valid depth information
-					if(mrpt::math::isFinite(z)&&(z >= min_depth && z <= max_depth)) 
-					{
-						// Transform points to the absolute reference of coordinates
-						point_height = (col - ox) * z * inv_fx + kinect_pose[2];
-			
-						for (unsigned int i=0; i<levels.size(); i++)
-						{
-							if (i == 0)
-							{
-								if ((point_height < levels[i])&&(point_height>=floor_limit))
-								{
-									if (z < d_sel[0])
-									{
-										pose_point.setFromValues(z, (col - ox) * z * inv_fx, (row - oy) * z * inv_fy, 0, 0, 0);
-										point_transformed = kinect_pose + pose_point;
-										x_sel[i] = point_transformed[0];
-										y_sel[i] = point_transformed[1];
-										z_sel[i] = point_transformed[2];
-										d_sel[i] = z;
-									}
-								}
-							}
-							else
-							{
-								if ((point_height < levels[i])&&(point_height>=levels[i-1]))
-								{
-									if (z < d_sel[i])
-									{
-										pose_point.setFromValues(z, (col - ox) * z * inv_fx, (row - oy) * z * inv_fy, 0, 0, 0);
-										point_transformed = kinect_pose + pose_point;
-										x_sel[i] = point_transformed[0];
-										y_sel[i] = point_transformed[1];
-										z_sel[i] = point_transformed[2];
-										d_sel[i] = z;
-									}
-								}
-							}
-						}
-					}
-				}
-
-				//Insert the most restrictive points in "kinect_points"
-				for (unsigned int i = 0; i < levels.size(); i++)
-				{
-					if (x_sel[i] != 20)
-						kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
-				}
-			}
 		}
 	}
 }
