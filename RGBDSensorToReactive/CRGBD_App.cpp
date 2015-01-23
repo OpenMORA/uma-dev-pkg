@@ -107,9 +107,9 @@ bool CRGBD_App::Iterate()
 			GetClosestPointsKinect();	//For the old Kinect sensor (Microsoft) using OpenCV
 
 
-		// Publish detected points as OpenMORA variable
-		string srangecam1 = ObjectToString(&rangecam_points);
-		m_Comms.Notify(format("RANGECAM%d", m_camera_ID), srangecam1 );
+		// Publish detected poitns as OpenMORA variable
+		string sKinect1 = ObjectToString(&kinect_points);
+		m_Comms.Notify("KINECT1", sKinect1 );
 
 
 		if (m_visualization)
@@ -179,9 +179,6 @@ void CRGBD_App::ReadConfiguration()
 	//-----------------
 	m_ini.enableSectionNames();
 
-	//Read the ID for this range camera
-	m_camera_ID = m_ini.read_int("","rangecam_ID", 1, false);
-
 	//Read number of height levels from the "NavigatorReactivePTG3D" module
 	levels.resize(m_ini.read_int("NavigatorReactivePTG3D","HEIGHT_LEVELS",1,true));
 
@@ -238,18 +235,18 @@ void CRGBD_App::ReadConfiguration()
 	// CAMERA POSE
 	//------------
 	//! @moos_param  pose_x  The X position (m) of the camera on the robot
-	rangecam_pose.x(m_ini.read_float("","pose_x", 0, true));
+	kinect_pose.x(m_ini.read_float("","pose_x", 0, true));
 
 	//! @moos_param  pose_y  The Y position (m) of the camera on the robot
-	rangecam_pose.y(m_ini.read_float("","pose_y", 0, true));
+	kinect_pose.y(m_ini.read_float("","pose_y", 0, true));
 	
 	//! @moos_param pose_z  The Z position (m) of the camera on the robot
-	rangecam_pose.z(m_ini.read_float("","pose_z", 0, true));
+	kinect_pose.z(m_ini.read_float("","pose_z", 0, true));
 	
 	//! @moos_param  pose_yaw  The yaw angle (degrees) of the camera on the robot (-180,180)
 	//! @moos_param  pose_pitch  The pitch angle (degrees) of the camera on the robot (-80,80) (something logical...)
 	//! @moos_param  pose_roll  The roll angle (degrees) of the camera on the robot (-90,90)
-	rangecam_pose.setYawPitchRoll(DEG2RAD(m_ini.read_float("","pose_yaw", 0, true)),
+	kinect_pose.setYawPitchRoll(DEG2RAD(m_ini.read_float("","pose_yaw", 0, true)),
 								DEG2RAD(m_ini.read_float("","pose_pitch", 0, true)),
 								DEG2RAD(m_ini.read_float("","pose_roll", 0, false)));
 }
@@ -382,9 +379,6 @@ bool CRGBD_App::OpenKinect()
 }
 
 
-//-------------------------------------------------------------------------
-// Get closests points based on depth images (Kinect 1.0)
-//-------------------------------------------------------------------------
 void CRGBD_App::GetClosestPointsKinect()
 {
 	//					Read new frame
@@ -411,12 +405,12 @@ void CRGBD_App::GetClosestPointsKinect()
 	std::vector <float> x_sel;
 	std::vector <float> y_sel;
 	std::vector <float> z_sel;
-	rangecam_points.clear();
+	kinect_points.clear();
 
 	math::CMatrixDouble44 pose_trans;
-	rangecam_pose.getHomogeneousMatrix(pose_trans);
+	kinect_pose.getHomogeneousMatrix(pose_trans);
 
-	if (abs(rangecam_pose[5]) < 0.4f*M_PI)
+	if (abs(kinect_pose[5]) < 0.4f*M_PI)
 	{
 		// Obtain the nearest point of each colum at each height level
 		//------------------------------------------------------------
@@ -472,10 +466,10 @@ void CRGBD_App::GetClosestPointsKinect()
 				}
 			}
 
-			//Insert the most restrictive points in "rangecam_points"
+			//Insert the most restrictive points in "kinect_points"
 			for (unsigned int i = 0; i < levels.size(); i++)
 				if (x_sel[i] != 20)
-					rangecam_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
+					kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
 
 		}
 	}
@@ -535,19 +529,19 @@ void CRGBD_App::GetClosestPointsKinect()
 				}
 			}
 
-			//Insert the most restrictive points in "rangecam_points"
+			//Insert the most restrictive points in "kinect_points"
 			for (unsigned int i = 0; i < levels.size(); i++)
 				if (x_sel[i] != 20)
-					rangecam_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
+					kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
 
 		}
 	}
 }
 
 
-//-------------------------------------------------------------------------
-// Get closests points based on depth and infrared images (Asus/PrimeSense)
-//-------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------
+// Obtains the locations of the closests points based on depth and infrared images
+//-------------------------------------------------------------------------------------
 void CRGBD_App::GetClosestPointsPS()
 {
 	openni::VideoFrameRef framed, frameir;
@@ -607,16 +601,16 @@ void CRGBD_App::GetClosestPointsPS()
 	//---------------------------------------------------------------------------
 	//						Process the point set
 	//---------------------------------------------------------------------------
-	rangecam_points.clear();
+	kinect_points.clear();
 	
 	std::vector <float> x_sel;
 	std::vector <float> y_sel;
 	std::vector <float> z_sel;
 
 	math::CMatrixDouble44 pose_trans;
-	rangecam_pose.getHomogeneousMatrix(pose_trans);
+	kinect_pose.getHomogeneousMatrix(pose_trans);
 
-	if ( abs(rangecam_pose[5]) < 0.4f*M_PI)
+	if ( abs(kinect_pose[5]) < 0.4f*M_PI)
 	{
 		// Obtain the nearest point of each colum at each height level
 		//------------------------------------------------------------
@@ -672,10 +666,10 @@ void CRGBD_App::GetClosestPointsPS()
 				}
 			}
 
-			//Insert the most restrictive points in "rangecam_points"
+			//Insert the most restrictive points in "kinect_points"
 			for (unsigned int i = 0; i < levels.size(); i++)
 				if (x_sel[i] != 20)
-					rangecam_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
+					kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
 
 		}
 	}
@@ -735,10 +729,10 @@ void CRGBD_App::GetClosestPointsPS()
 				}
 			}
 
-			//Insert the most restrictive points in "rangecam_points"
+			//Insert the most restrictive points in "kinect_points"
 			for (unsigned int i = 0; i < levels.size(); i++)
 				if (x_sel[i] != 20)
-					rangecam_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
+					kinect_points.insertPointFast(x_sel[i],y_sel[i],z_sel[i]);
 
 		}
 	}
@@ -751,7 +745,7 @@ void CRGBD_App::InitializeScene()
 	m_window = gui::CDisplayWindow3D::Create();
 	mrpt::global_settings::OCTREE_RENDER_MAX_POINTS_PER_NODE = 10000;  //I don't know how this influences the scene...
 
-	m_window->setWindowTitle("rangecam points");
+	m_window->setWindowTitle("Kinect points");
 	m_window->resize(800,600);
 	m_window->setPos(50,0);
 	m_window->setCameraPointingToPoint(0,0,1.5);
@@ -775,14 +769,13 @@ void CRGBD_App::InitializeScene()
 }
 
 
-
 void CRGBD_App::ShowPoints()
 {
 	m_scene = m_window->get3DSceneAndLock();
 
 	opengl::CPointCloudPtr obj2 = opengl::CPointCloud::Create();
 	obj2 = m_scene->getByClass <mrpt::opengl::CPointCloud> (0);
-	obj2->loadFromPointsMap<mrpt::maps::CSimplePointsMap> (&rangecam_points);
+	obj2->loadFromPointsMap<mrpt::maps::CSimplePointsMap> (&kinect_points);
 
 	m_window->unlockAccess3DScene();
 	m_window->repaint();

@@ -46,8 +46,8 @@ protected:
 	float res_height;
 	float lens_disp;
 	unsigned int downsample;
-	mrpt::maps::CSimplePointsMap	rangecam_points;
-	mrpt::poses::CPose3D			rangecam_pose;
+	mrpt::maps::CSimplePointsMap	kinect_points;
+	mrpt::poses::CPose3D			kinect_pose;
 
     cv::VideoCapture *capture;
 
@@ -55,7 +55,6 @@ protected:
 	mrpt::opengl::COpenGLScenePtr	m_scene;
 	bool							m_visualization;
 	bool							m_new_sensor;
-	unsigned int					m_camera_ID;
 
 	openni::Status		rc;
 	openni::Device		device;
