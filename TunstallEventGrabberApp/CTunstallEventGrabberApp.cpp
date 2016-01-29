@@ -23,9 +23,10 @@ CTunstallEventGrabberApp::CTunstallEventGrabberApp() :
 	m_save_to_file		(false),
 	m_start_grabbing	(false),
 	m_verbose_level		(1),
+	m_port				(3),
 	m_display_window	(NULL),
 	m_image				(UNINITIALIZED_IMAGE),
-	m_tout				(0),			// 0 : indefinitelyç
+	m_tout				(0),			// 0 : indefinitely
 	m_log_filename		(""),
 	m_log_file			(NULL)
 {} // end-constructor
@@ -135,8 +136,7 @@ bool CTunstallEventGrabberApp::OnStartUp()
 
 	// sets the COM port number
 	m_MissionReader.GetConfigurationParam( "com_port_number", m_port );
-	m_port = 8;
-
+	
 	// log info
 	m_MissionReader.GetConfigurationParam( "save_to_file", m_save_to_file );
 	m_MissionReader.GetConfigurationParam( "log_filename", m_log_filename );
