@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <stdio.h>
+#include <mrpt/system/os.h>
 
 using namespace std;
 using namespace mrpt::utils;
@@ -13,7 +14,7 @@ using namespace mrpt::utils;
 enum CAM_TYPE {RTSP,WEBCAM};
 
 /** Default Constructor */
-CManPublisherApp::CManPublisherApp() : m_initialized_ok(false), m_start_to_detect(false)
+CManPublisherApp::CManPublisherApp() : m_initialized_ok(false)
 {
 	
 } // end-constructor
@@ -36,6 +37,9 @@ bool CManPublisherApp::DoRegistrations()
 {
 	//! @moos_subscribe SHUTDOWN
 	AddMOOSVariable( "SHUTDOWN", "SHUTDOWN", "SHUTDOWN", 0 );
+
+	//! @moos_subscribe TUNSTALL_LOGGER_OUTPUT_JSON
+	AddMOOSVariable( "TUNSTALL_LOGGER_OUTPUT_JSON", "TUNSTALL_LOGGER_OUTPUT_JSON", "TUNSTALL_LOGGER_OUTPUT_JSON", 0 );
 
 	RegisterMOOSVariables();
 	return true;
@@ -77,11 +81,7 @@ bool CManPublisherApp::Iterate()
 		for(int i = 2; i < lista.size(); ++i)
 			cmd = cmd + " " + lista[i].c_str();
 	}
-	// cin >> topic >> message >> param;
 
-	//!  @moos_publish TOPIC MESSAGE
-	//m_Comms.Notify( topic, message+" "+param );
-	// cout << "Topic: " << lista[0].c_str() << " and command: " << cmd << endl;
 	m_Comms.Notify( topic, cmd );
 
 	return true;

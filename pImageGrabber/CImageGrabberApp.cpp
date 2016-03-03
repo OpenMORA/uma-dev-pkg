@@ -97,6 +97,14 @@ bool CImageGrabberApp::OnStartUp()
 
 	// initialize camera
 	m_camera.initialize();
+
+	// autostart?
+	m_MissionReader.GetConfigurationParam( "autostart", m_start_grabbing );
+	if( m_start_grabbing )
+		VERBOSE_LEVEL(1) << "[pImageGrabber -- INFO] Starting to grab ..." << endl;
+	else 
+		VERBOSE_LEVEL(1) << "[pImageGrabber -- INFO] Use 'IMAGE_GRABBER_CMD START' to start grabbing ..." << endl;
+
 	m_initialized_ok = true;
 
 	return true;

@@ -99,6 +99,16 @@ bool CFaceDetectorApp::OnStartUp()
 	m_camera.initialize();
 #endif
 
+	// autostart?
+	m_MissionReader.GetConfigurationParam( "autostart", m_start_detecting );
+	if( m_start_detecting )
+	{
+		VERBOSE_LEVEL(1) << "[pFaceDetector -- INFO] Starting to detect ..." << endl;
+		m_ini_time = mrpt::system::now();
+	}
+	else 
+		VERBOSE_LEVEL(1) << "[pFaceDetector -- INFO] Use 'FACE_DETECT_CMD START' to start detecting ..." << endl;
+
 	m_initialized_ok = true;
 	return true;
 } // end-OnStartUp

@@ -40,7 +40,6 @@ protected:
 	// DATA. Your local variables here...
 	// -----------------------------------------------
 	bool							m_initialized_ok;
-	bool							m_start_to_detect;	//!< Whether or not to start to find faces
 
 };
 #endif

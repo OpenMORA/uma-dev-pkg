@@ -89,7 +89,7 @@ protected:
 
 	mrpt::utils::CImage				m_image;
 	int								m_img_w, m_img_h;
-	cv::Mat							m_ellipse_roi;								//!< Ellipsoidal ROI for face recognition
+	cv::Mat							m_ellipse_roi;			//!< Ellipsoidal ROI for face recognition
 	mrpt::gui::CDisplayWindowPtr	m_display_window;		//!< The display window
 
 	cv::Ptr<cv::FaceRecognizer>		m_recognizer;								//!< The face recognizer
@@ -97,6 +97,12 @@ protected:
 	cv::Ptr<cv::FaceRecognizer>		m_recognizer3;								//!< The face recognizer
 	cv::CascadeClassifier			m_left_eye_detector, m_right_eye_detector;	//!< The eye cascade classifiers
 	MODEL_TYPE						m_model_type;
+
+	// consolidation and timeout stage
+	unsigned int					m_facerec_consolidation, m_facerec_consolidation_th;
+	double							m_tout;
+	mrpt::system::TTimeStamp		m_ini_time;
+	int								m_temptative_class;
 
 	// face database and votation scheme
 	vector<string>					m_face_labels_db;

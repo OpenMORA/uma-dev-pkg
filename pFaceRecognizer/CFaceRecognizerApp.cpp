@@ -21,6 +21,7 @@ using namespace mrpt::utils;
 using namespace mrpt::obs;
 
 #define VERBOSE_LEVEL(_LEVEL) if(m_verbose_level>=_LEVEL) cout
+#define INVALID_FACE_CLASS -1
 
 const double BASELINE_RATIO = 0.380;
 inline string bool2string(const bool b) { return b ? "Yes" : "No"; }
@@ -41,6 +42,10 @@ CFaceRecognizerApp::CFaceRecognizerApp() :
 	m_recognizer2(NULL),
 	m_recognizer3(NULL),
 	m_model_type(LBPH),
+	m_facerec_consolidation(0),
+	m_facerec_consolidation_th(5),
+	m_tout(0), // 0 = indefinitely
+	m_temptative_class(INVALID_FACE_CLASS),
 	m_face_labels_db(vector<string>()),
 	m_num_classes(0),
 	m_new_face_th(10)
@@ -58,6 +63,9 @@ CFaceRecognizerApp::~CFaceRecognizerApp()
 bool CFaceRecognizerApp::OnStartUp()
 {
 	m_MissionReader.GetConfigurationParam( "debug", m_debug );
+
+	// sets the detector timeout (in seconds)
+	m_MissionReader.GetConfigurationParam( "timeout", m_tout );
 	
 	// show view flag
 	m_MissionReader.GetConfigurationParam( "show_view", m_show_view );
@@ -196,6 +204,16 @@ bool CFaceRecognizerApp::OnStartUp()
 	m_camera.initialize();
 #endif
 
+	// autostart?
+	m_MissionReader.GetConfigurationParam( "autostart", m_start_recognizing );
+	if( m_start_recognizing )
+	{
+		VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Starting to grab ..." << endl;
+		m_ini_time = mrpt::system::now();
+	}
+	else 
+		VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Use 'FACE_RECOGNIZE_CMD START' to start recognizing ..." << endl;
+
 	m_initialized_ok = true;
 	return true;
 } // end-OnStartUp
@@ -210,9 +228,6 @@ bool CFaceRecognizerApp::DoRegistrations()
 	// FACE_DETECT_CMD {START,STOP}
 	// FACE_DETECT_CMD {SET_TIMEOUT} TIMEOUT_IN_SECONDS
 	AddMOOSVariable( "FACE_RECOGNIZE_CMD", "FACE_RECOGNIZE_CMD", "FACE_RECOGNIZE_CMD", 0 );
-
-	////! @moos_subscribe GRABBED_IMAGE_DIR
-	//AddMOOSVariable( "GRABBED_IMAGE_DIR", "GRABBED_IMAGE_DIR", "GRABBED_IMAGE_DIR", 0 );
 
 	//! @moos_subscribe FACES_DETECT_IMGS
 	AddMOOSVariable( "FACES_DETECT_IMGS", "FACES_DETECT_IMGS", "FACES_DETECT_IMGS", 0 );
@@ -251,6 +266,8 @@ bool CFaceRecognizerApp::OnNewMail(MOOSMSG_LIST &NewMail)
 			if( MOOSStrCmp(cad,"start") )
 			{
 				m_start_recognizing = true;
+				m_ini_time = mrpt::system::now();		// set initial detecting time
+				m_facerec_consolidation = 0;			// restart consolidation counter
 				VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Starting to recognize ..." << endl;
 			}
 			// STOP DETECTING
@@ -258,6 +275,21 @@ bool CFaceRecognizerApp::OnNewMail(MOOSMSG_LIST &NewMail)
 			{
 				m_start_recognizing = false;
 				VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Stopped" << endl;
+			}
+			// SETTING TIMEOUT
+			else if( MOOSStrCmp(cad,"set_timeout") )
+			{
+				// timeout is defined
+				if( lista.size() > 1 )
+				{
+					double tout = atof( lista[1].c_str() );
+					if( tout >= 0 )			// to avoid negative timeouts
+					{						
+						m_tout = tout;
+						VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Setting timeout to " << m_tout << endl;
+					}
+					else VERBOSE_LEVEL(0) << "[pFaceRecognizer -- ERROR] Timeout cannot be negative!: " << tout << endl;
+				} // end-if
 			}
 			else VERBOSE_LEVEL(0) << "[pFaceRecognizer -- ERROR] Command not recognized: " << cad << endl;
 			
@@ -270,12 +302,6 @@ bool CFaceRecognizerApp::OnNewMail(MOOSMSG_LIST &NewMail)
 				// clear
 			}
 		} // end-if
-
-		//if( i->GetName() == "GRABBED_IMAGE_DIR" )
-		//{
-		//	mrpt::utils::CImage::IMAGES_PATH_BASE = i->GetString();
-		//	VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Directory from where to take grabbed images: " << endl << mrpt::utils::CImage::IMAGES_PATH_BASE << endl;
-		//} // end-if
 		
 	} // end-for
     UpdateMOOSVariables(NewMail);
@@ -432,21 +458,6 @@ void CFaceRecognizerApp::m_transform_image(
 	trans_mat.at<double>(1,2) = -tr_y;
 
 	cv::warpAffine(temp,output,trans_mat,input.size(),INTER_CUBIC);
-
-	//double ncxR = cxR*rot_mat.at<double>(0,0)+cyR*rot_mat.at<double>(0,1)+rot_mat.at<double>(0,2);
-	//double ncyR = cxR*rot_mat.at<double>(1,0)+cyR*rot_mat.at<double>(1,1)+rot_mat.at<double>(1,2);
-
-	//double ncxL = cxL*rot_mat.at<double>(0,0)+cyL*rot_mat.at<double>(0,1)+rot_mat.at<double>(0,2);
-	//double ncyL = cxL*rot_mat.at<double>(1,0)+cyL*rot_mat.at<double>(1,1)+rot_mat.at<double>(1,2);
-
-	// double tr_x = cxR-0.272*input.cols, tr_y = cyR-0.43*input.rows; // set position of the right eye (values empirically set)
-	//double tr_x = ncxR-0.272*input.cols, tr_y = ncyR-0.43*input.rows; // set position of the right eye (values empirically set)
-	//cv::Mat trans_mat = cv::Mat::zeros(2,3,CV_64F);
-	//trans_mat.at<double>(0,0) = trans_mat.at<double>(1,1) = 1;
-	//trans_mat.at<double>(0,2) = -tr_x;
-	//trans_mat.at<double>(1,2) = -tr_y;
-	//
-	//cv::warpAffine(temp,output,trans_mat,temp.size());
 
 } // end-m_transform_image
 
@@ -686,6 +697,25 @@ bool CFaceRecognizerApp::m_recognize_face()
 		m_display_window->showImage(plotImage);
 	}
 
+	// consolidation stage (at least 5 consecutive times)
+	if( m_temptative_class == INVALID_FACE_CLASS || bestClass == m_temptative_class )
+	{
+		if( ++m_facerec_consolidation < m_facerec_consolidation_th )
+		{
+			VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Face recognized, consolidating (" << m_facerec_consolidation << ")" << endl;
+		}
+		else
+		{
+			m_ini_time = mrpt::system::now();
+			VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Face recognized (consolidation complete)!: " << m_face_labels_db[bestClass] << endl;
+			m_Comms.Notify( "FACE_RECOGNIZE_RESULT", m_face_labels_db[bestClass] );
+			VERBOSE_LEVEL(2) << " ... OK (" << m_face_labels_db[bestClass] << ")" << endl;
+			return true;
+		}
+	}
+	else
+		m_facerec_consolidation = 0;
+
 #if 0
 	// debug
 	/** /
@@ -797,7 +827,7 @@ bool CFaceRecognizerApp::m_recognize_face()
 		return true;
 	} // end-if
 #endif
-	return true;
+	// return true;
 
 #if 0
 
@@ -867,10 +897,6 @@ bool CFaceRecognizerApp::m_recognize_face()
 		return true;
 	}
 #endif
-	// publish NOT RECOGNIZED
-	m_Comms.Notify( "FACE_RECOGNIZE_RESULT", "NONE" );
-	VERBOSE_LEVEL(2) << " ... OK (NONE)" << endl;
-	return false;
 } // end-m_recognize_faces
 
 /** Iterate */
@@ -883,7 +909,24 @@ bool CFaceRecognizerApp::Iterate()
 	if( m_copy_image() )
 	{
 		if( m_add_new_face )	m_add_face();
-		else					m_recognize_face();
+		else					
+		{
+			if( !m_recognize_face() ) 
+			{
+				if( m_tout > 0 ) // if m_tout == 0 -> no timeout has been set, so try to detect indefinitely
+				{
+					const double elapsed_time = mrpt::system::timeDifference( m_ini_time, mrpt::system::now() );
+					VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] No faces recognized for " << elapsed_time << " seconds (timeout: " << m_tout << " sec.)" << endl;
+					if( elapsed_time > m_tout )
+					{
+						//! @moos_publish FACE_DETECT_RESULT TIMEOUT
+						m_Comms.Notify( "FACE_RECOGNIZE_RESULT", "NONE" );
+						m_start_recognizing = false;
+						VERBOSE_LEVEL(1) << "[pFaceRecognizer -- INFO] Timeout! No face recognized in " << m_tout << " seconds, stop trying." << endl << "Message 'FACE_RECOGNIZE_RESULT NONE' has been sent." << endl;
+					} // end-if
+				} // end-if
+			}
+		}
 	} // end-if
 
 	return true;
